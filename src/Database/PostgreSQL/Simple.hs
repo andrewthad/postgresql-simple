@@ -80,9 +80,13 @@ module Database.PostgreSQL.Simple
     -- * Queries that return results
     , query
     , query_
+    , preparedQuery
+    , preparedQuery_
     -- ** Queries taking parser as argument
     , queryWith
     , queryWith_
+    , preparedQueryWith
+    , preparedQueryWith_
     -- * Queries that stream results
     , FoldOptions(..)
     , FetchQuantity(..)
@@ -106,6 +110,7 @@ module Database.PostgreSQL.Simple
     , execute
     , execute_
     , executeMany
+    , preparedExecute
 --    , Base.insertID
     -- * Transaction handling
     , withTransaction
@@ -122,6 +127,7 @@ module Database.PostgreSQL.Simple
 import           Data.ByteString.Builder (Builder, byteString, char8)
 import           Control.Applicative ((<$>))
 import           Control.Exception as E
+import           Control.Monad (forM)
 import           Data.ByteString (ByteString)
 import           Data.Int (Int64)
 import           Data.List (intersperse)
@@ -139,6 +145,8 @@ import           Database.PostgreSQL.Simple.Internal.PQResultUtils
 import           Database.PostgreSQL.Simple.Transaction
 import qualified Database.PostgreSQL.LibPQ as PQ
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy as BL
 
 
 -- | Format a query string.
@@ -315,6 +323,13 @@ execute conn template qs = do
   result <- exec conn =<< formatQuery conn template qs
   finishExecute conn template result
 
+preparedExecute :: (ToRow q) => Connection -> ByteString -> q -> IO Int64
+preparedExecute conn stmt qs = do
+  let actions = toRow qs
+  params <- actionsToParams conn stmt actions
+  result <- execPrepared conn stmt params
+  finishExecute conn (Query stmt) result
+
 -- | Execute a multi-row @INSERT@, @UPDATE@, or other SQL query that is not
 -- expected to return results.
 --
@@ -409,6 +424,41 @@ queryWith_ :: RowParser r -> Connection -> Query -> IO [r]
 queryWith_ parser conn q@(Query que) = do
   result <- exec conn que
   finishQueryWith parser conn q result
+
+-- | TODO: write docs
+preparedQuery :: (ToRow q, FromRow r) => Connection -> ByteString -> q -> IO [r]
+preparedQuery = preparedQueryWith fromRow
+
+-- | A version of 'preparedQuery' that does not perform query substitution.
+preparedQuery_ :: FromRow r => Connection -> ByteString -> IO [r]
+preparedQuery_ = preparedQueryWith_ fromRow
+
+-- | A version of 'preparedQuery' taking parser as argument
+preparedQueryWith :: ToRow q => RowParser r -> Connection -> ByteString -> q -> IO [r]
+preparedQueryWith parser conn stmt qs = do
+  let actions = toRow qs
+  params <- actionsToParams conn stmt actions
+  result <- execPrepared conn stmt params
+  finishQueryWith parser conn (Query stmt) result
+
+-- | A version of 'preparedQuery_' taking parser as argument
+preparedQueryWith_ :: RowParser r -> Connection -> ByteString -> IO [r]
+preparedQueryWith_ parser conn stmt = do
+  result <- execPrepared conn stmt []
+  finishQueryWith parser conn (Query stmt) result
+
+actionsToParams ::
+     Connection
+  -> ByteString
+  -> [Action]
+  -> IO [Maybe (ByteString, PQ.Format)]
+actionsToParams conn stmt actions = forM actions $ \action -> do
+  let action' = case action of
+        Escape b -> Plain (Builder.byteString b)
+        _ -> action
+  builder <- buildAction conn (Query stmt) actions action'
+  let !b = BL.toStrict (Builder.toLazyByteString builder)
+  return (Just (b, PQ.Text))
 
 -- | Perform a @SELECT@ or other SQL query that is expected to return
 -- results. Results are streamed incrementally from the server, and

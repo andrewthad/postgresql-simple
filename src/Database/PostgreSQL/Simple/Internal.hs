@@ -371,6 +371,17 @@ exec conn sql =
                    PQ.FatalError    -> getResult h mres'
 #endif
 
+execPrepared ::
+     Connection
+  -> ByteString
+  -> [Maybe (ByteString, PQ.Format)]
+  -> IO PQ.Result
+execPrepared conn sql params = withConnection conn $ \h -> do
+  mres <- PQ.execPrepared h sql params PQ.Text
+  case mres of
+    Nothing  -> throwLibPQError h "PQexec returned no results"
+    Just res -> return res
+
 -- | A version of 'execute' that does not perform query substitution.
 execute_ :: Connection -> Query -> IO Int64
 execute_ conn q@(Query stmt) = do
